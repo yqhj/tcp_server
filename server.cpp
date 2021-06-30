@@ -25,11 +25,10 @@ int connection_counter = 0;
 class Socket {
   public:
     int sockfd;
-    int status;
     std::string listen_port;
     struct addrinfo addr_info;
     struct addrinfo *server_info;
-    int create ( void );
+    void create ( void );
     int acceptConnections( void );
     Socket( int port );
     ~Socket( void );
@@ -39,7 +38,7 @@ class Socket {
     int createSocket( void );
     int bindAndListen ( void );
     int handleSession ( int sessionfd );
-    int createSession( int sessionfd );
+    void createSession( int sessionfd );
 };
 
 Socket::Socket( int port ) {
@@ -51,15 +50,18 @@ Socket::Socket( int port ) {
 
 Socket::~Socket(void) {
   freeaddrinfo(server_info);
+  shutdown(sockfd, SHUT_RDWR);
+  close(sockfd);
 }
 
-int Socket::create(void) {
+void Socket::create(void) {
+  int status = 0;
   if ((status = getaddrinfo(NULL, listen_port.c_str(), &addr_info, &server_info)) != 0){
     fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
     exit(1);
   }
   sockfd = createSocket();
-  status = bindAndListen();
+  bindAndListen();
 }
 
 int Socket::createSocket(void){
@@ -91,7 +93,6 @@ int Socket::handleSession(int sessionfd){
   fd_set sess_fdset;
   struct timeval timeout;
   int fd_ready, byte_count;
-  int first_packet = 1;
   FD_ZERO(&sess_fdset);
   while(1){
     FD_SET(sessionfd, &sess_fdset);
@@ -123,12 +124,9 @@ int Socket::handleSession(int sessionfd){
   }
 }
 
-int Socket::createSession(int sessionfd){
-  if (sessionfd == -1){
-    printf("Session creation error\n");
-    return 1;
-  }
+void Socket::createSession(int sessionfd){
   pid_t new_fork = fork();
+  
   if (new_fork == -1){
     printf("Failed to create process to handle connection from %s\n", inet_ntoa(remote_addr.sin_addr));
   }
@@ -147,28 +145,38 @@ int Socket::createSession(int sessionfd){
 
 int Socket::acceptConnections(void){
   int sessionfd;
-  while(1){
-    sessionfd = accept(sockfd, (struct sockaddr *)&remote_addr, &addr_size);
-    connection_counter++;
-    printf("Accepted new connection from %s\n", inet_ntoa(remote_addr.sin_addr));
-    createSession(sessionfd);
+
+  sessionfd = accept(sockfd, (struct sockaddr *)&remote_addr, &addr_size);
+  if(sessionfd == -1) {
+  	printf("accept error!\n");
+	return -1;
   }
-  close(sockfd);
+  
+  connection_counter++;
+  printf("Accepted new connection from %s\n", inet_ntoa(remote_addr.sin_addr));
+  createSession(sessionfd);
+  return 0;
 }
 
-void *processManager(void *input){
+void processManager(){
   printf("Created process manager thread\n");
   pid_t done_pid;
   int pid_status;
-  while(1){
-    if (done_pid = waitpid(-1, &pid_status, 0) > 0){
-      printf("Child processes terminated and has been successfully reaped\n");
-      fork_counter--;
-      connection_counter--;
-      if (fork_counter != connection_counter){
-        printf("Error: thread = pthread_create(&proc_man_thread, NULL, processManager, (void *)void_input);Connection count does not equal fork count\n");
-      }
+  bool find_reaped = false;
+
+  while ((done_pid = waitpid(-1, &pid_status, WNOHANG)) > 0){
+    printf("Child processes terminated and has been successfully reaped\n");
+	find_reaped = true;
+    fork_counter--;
+    connection_counter--;
+    if (fork_counter != connection_counter){
+      printf("Error: Connection count does not equal fork count!\n");
     }
+  }
+
+  if(find_reaped) {
+    printf("Connection count: %d\n", connection_counter);
+    printf("Fork Count:       %d\n", fork_counter);
   }
 }
 
@@ -176,10 +184,11 @@ int main(void){
   int port = 55555;
   Socket tcp_socket(port);
   tcp_socket.create();
-  pthread_t proc_man_thread;
-  int thread, *void_input;
-  thread = pthread_create(&proc_man_thread, NULL, processManager, (void *)void_input);
-  tcp_socket.acceptConnections();
-  (void) pthread_join(thread, NULL);
+
+  while(1){
+    tcp_socket.acceptConnections();
+	processManager();
+  }
+  
   return 0;
 }
