@@ -12,15 +12,13 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <pthread.h>
+#include <signal.h>
 /* cpp libraries */
 #include <string>
 
+
 /* Define Constants */
 #define CONNECT_BUFFER 10 // Number of pending connections to hold in buffer
-
-// Global variables
-int fork_counter = 0;
-int connection_counter = 0;
 
 class Socket {
   public:
@@ -136,9 +134,6 @@ void Socket::createSession(int sessionfd){
   }
   else{
     printf("Created process %d to serve %s\n", new_fork, inet_ntoa(remote_addr.sin_addr));
-    fork_counter++;
-    printf("Connection count: %d\n", connection_counter);
-    printf("Fork Count:       %d\n", fork_counter);
     close(sessionfd);
   }
 }
@@ -152,42 +147,25 @@ int Socket::acceptConnections(void){
 	return -1;
   }
   
-  connection_counter++;
   printf("Accepted new connection from %s\n", inet_ntoa(remote_addr.sin_addr));
   createSession(sessionfd);
   return 0;
 }
 
-void processManager(){
-  printf("Created process manager thread\n");
-  pid_t done_pid;
-  int pid_status;
-  bool find_reaped = false;
-
-  while ((done_pid = waitpid(-1, &pid_status, WNOHANG)) > 0){
-    printf("Child processes terminated and has been successfully reaped\n");
-	find_reaped = true;
-    fork_counter--;
-    connection_counter--;
-    if (fork_counter != connection_counter){
-      printf("Error: Connection count does not equal fork count!\n");
-    }
-  }
-
-  if(find_reaped) {
-    printf("Connection count: %d\n", connection_counter);
-    printf("Fork Count:       %d\n", fork_counter);
-  }
-}
-
 int main(void){
+  struct sigaction act;   
+  act.sa_handler = SIG_IGN;
+  sigemptyset(&act.sa_mask);
+  act.sa_flags = 0;
+  // To avoid zombie process
+  sigaction(SIGCHLD, &act, NULL);
+
   int port = 55555;
   Socket tcp_socket(port);
   tcp_socket.create();
 
   while(1){
     tcp_socket.acceptConnections();
-	processManager();
   }
   
   return 0;
