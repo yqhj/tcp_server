@@ -13,12 +13,22 @@
 #include <sys/wait.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdlib.h>
 /* cpp libraries */
 #include <string>
 
-
 /* Define Constants */
 #define CONNECT_BUFFER 10 // Number of pending connections to hold in buffer
+
+void setSignalHandler(int signo, void (*handler)(int)) {  
+  struct sigaction act; 
+  
+  act.sa_handler = handler;
+  sigemptyset(&act.sa_mask);
+  act.sa_flags = 0;
+  
+  sigaction(signo, &act, NULL);
+}
 
 class Socket {
   public:
@@ -68,6 +78,10 @@ int Socket::createSocket(void){
     fprintf(stderr, "socket error: %s\n", gai_strerror(sockfd));
     exit(1);
   }
+
+  int opt=1;   
+  setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)); 	
+  
   return sockfd;
 }
 
@@ -86,15 +100,25 @@ int Socket::bindAndListen(void){
   return res;
 }
 
-int Socket::handleSession(int sessionfd){
+/*
+ * 读取命令行（命令行必须以\r\n结束，命令和参数以空格分隔）
+ * 例如：rpc:system wget www.baidu.com\r\n
+ * cmd: 存放命令字符串
+ * param: 存放命令参数字符串
+ */
+void getCommand(int sessionfd, std::string &cmd, std::string &param){
   char data[512];
+  std::string str;
   fd_set sess_fdset;
   struct timeval timeout;
-  int fd_ready, byte_count;
+  int fd_ready;
+  int byte_count = 0;
   FD_ZERO(&sess_fdset);
-  while(1){
+  bool cmd_got = false;
+  
+  while(!cmd_got){
     FD_SET(sessionfd, &sess_fdset);
-    timeout.tv_sec = 60;
+    timeout.tv_sec = 5;
     timeout.tv_usec = 0;
     fd_ready = select(sessionfd+1, &sess_fdset, NULL, NULL, &timeout);
     if (fd_ready == -1){
@@ -108,18 +132,64 @@ int Socket::handleSession(int sessionfd){
       exit(1);
     }
     else if (FD_ISSET(sessionfd, &sess_fdset)){
-      byte_count = read(sessionfd, data, sizeof(data));
+      byte_count = read(sessionfd, data, sizeof(data) - 1 - str.length());
       if (byte_count == 0){
         printf("Connection closed by peer\n");
         close(sessionfd);
         exit(0);
       }
       else{
-        data[byte_count] = '\0';
-        printf("Data: %s", data);
+	  	data[byte_count] = '\0';
+		str += data;
       }
+
+      auto n = str.find("\r\n");
+	  if(n != std::string::npos) {
+	    cmd_got = true;
+	  } else if(str.length() == sizeof(data) - 1) {
+	    printf("Command not ended with \\r\\n!\n");
+        close(sessionfd);
+        exit(1);
+	  }
     }
   }
+
+  if(cmd_got){
+  	str.resize(str.length() - 2);
+    auto n = str.find(" ");
+	if(n == std::string::npos || str.length() < 3 || n == 0 || n == str.length() - 1) {
+	  printf("Command format error: no space between cmd and param!\n");
+	  close(sessionfd);
+      exit(1);
+	} else {
+	  cmd = str.substr(0, n);
+	  param = str.substr(n + 1);
+	}
+  }
+}
+
+void rpcSystem(int sessionfd, std::string sys_cmd) {
+  setSignalHandler(SIGCHLD, SIG_DFL);
+  
+  int ret = system(sys_cmd.c_str());
+  setSignalHandler(SIGCHLD, SIG_IGN);
+
+  std::string str = std::to_string(ret);
+  send(sessionfd, str.c_str(), str.length(), 0);
+}
+
+int Socket::handleSession(int sessionfd){
+  std::string cmd, param;
+
+  getCommand(sessionfd, cmd, param);
+  printf("new cmd from client: %s, %s.\n", cmd.c_str(), param.c_str());
+  if(cmd == "rpc:system") {
+  	printf("rpc:system cmd reveived!\n");
+	rpcSystem(sessionfd, param);
+  }
+  
+  close(sessionfd);
+  exit(0);
 }
 
 void Socket::createSession(int sessionfd){
@@ -133,7 +203,6 @@ void Socket::createSession(int sessionfd){
     handleSession(sessionfd);
   }
   else{
-    printf("Created process %d to serve %s\n", new_fork, inet_ntoa(remote_addr.sin_addr));
     close(sessionfd);
   }
 }
@@ -141,9 +210,10 @@ void Socket::createSession(int sessionfd){
 int Socket::acceptConnections(void){
   int sessionfd;
 
+  addr_size = sizeof(struct sockaddr_in);
   sessionfd = accept(sockfd, (struct sockaddr *)&remote_addr, &addr_size);
   if(sessionfd == -1) {
-  	printf("accept error!\n");
+  	perror("accept error");
 	return -1;
   }
   
@@ -153,14 +223,10 @@ int Socket::acceptConnections(void){
 }
 
 int main(void){
-  struct sigaction act;   
-  act.sa_handler = SIG_IGN;
-  sigemptyset(&act.sa_mask);
-  act.sa_flags = 0;
   // To avoid zombie process
-  sigaction(SIGCHLD, &act, NULL);
+  setSignalHandler(SIGCHLD, SIG_IGN);
 
-  int port = 55555;
+  int port = 1234;
   Socket tcp_socket(port);
   tcp_socket.create();
 
@@ -170,3 +236,4 @@ int main(void){
   
   return 0;
 }
+

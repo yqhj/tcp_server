@@ -7,8 +7,9 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <string>
 
-#define PORT 55555
+#define PORT 1234
 #define ADDRESS "127.0.0.1"
 
 int createSocket(void){
@@ -17,6 +18,7 @@ int createSocket(void){
     fprintf(stderr, "socket error: %s\n", gai_strerror(sockfd));
     exit(1);
   }
+  
   return sockfd;
 }
 
@@ -36,20 +38,50 @@ int connectToServer(int sockfd, struct sockaddr_in server_address){
   return 0;
 }
 
-int talk2Server(int sockfd, char *message){
-  while(1){
-    send(sockfd, message, strlen(message), 0);
-    sleep(1);
-  }
+int talk2Server(int sockfd, const char *message){
+  send(sockfd, message, strlen(message), 0);
+  return 0;
 }
 
-int main(void){
+int ipc_system(const char * cmd){
   struct sockaddr_in server_address;
   memset(&server_address, 0, sizeof(server_address));
   int sockfd = createSocket();
   if (connectToServer(sockfd, server_address) < 0){
-    exit(1);
+    return -1;
   }
-  char message[1024] = "Hello world\n";
-  talk2Server(sockfd, message);
+
+  std::string cmd_str = std::string("rpc:system ") + cmd + "\r\n";
+  talk2Server(sockfd, cmd_str.c_str());
+
+  char buf[100];
+  int recv_sum;
+  if((recv_sum = recv(sockfd, buf, sizeof(buf) - 1, 0)) <= 0) {
+    return 88;
+  }
+  buf[recv_sum] = '\0';
+  int ret_code = atoi(buf);
+  return ret_code;
+}
+
+int main(int argc, char ** argv){
+//  struct sockaddr_in server_address;
+//  memset(&server_address, 0, sizeof(server_address));
+//  int sockfd = createSocket();
+//  if (connectToServer(sockfd, server_address) < 0){
+//    exit(1);
+//  }
+
+  if(argc < 2) {
+    printf("Usage: %s cmd_string\n", argv[0]);
+	exit(1);
+  }
+
+//  std::string cmd = argv[1];
+//  cmd += "\r\n";  
+//  printf("param is:%s.", cmd.c_str());
+//  talk2Server(sockfd, cmd.c_str());
+
+  int ret = ipc_system(argv[1]);
+  printf("system ret code is %d\n", ret);
 }
